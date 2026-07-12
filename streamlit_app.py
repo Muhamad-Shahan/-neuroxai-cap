@@ -5,7 +5,6 @@ import torch.nn.functional as F
 from torchvision import transforms
 from PIL import Image
 import numpy as np
-import cv2
 import time
 
 from pytorch_grad_cam import GradCAMPlusPlus
