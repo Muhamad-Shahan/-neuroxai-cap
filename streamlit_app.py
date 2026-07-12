@@ -201,12 +201,51 @@ def generate_lime(model, image_tensor, device):
     return lime_boundary_img
 
 
+def analyze_image_validity(pil_rgb_image):
+    """Heuristic checks to flag inputs that don't look like a T1-weighted MRI slice."""
+    img_arr = np.array(pil_rgb_image.convert("RGB")).astype(np.float32) / 255.0
+    r, g, b = img_arr[..., 0], img_arr[..., 1], img_arr[..., 2]
+
+    max_c = np.maximum(np.maximum(r, g), b)
+    min_c = np.minimum(np.minimum(r, g), b)
+    saturation = np.where(max_c > 0, (max_c - min_c) / (max_c + 1e-8), 0)
+    mean_saturation = float(saturation.mean())
+
+    gray = np.array(pil_rgb_image.convert("L")).astype(np.float32) / 255.0
+    dark_fraction = float((gray < 0.08).mean())
+
+    w, h = pil_rgb_image.size
+    aspect_ratio = w / h
+
+    reasons = []
+    is_valid = True
+
+    if mean_saturation > 0.12:
+        is_valid = False
+        reasons.append("Image shows color saturation typical of a photograph, not a grayscale MRI scan.")
+
+    if dark_fraction < 0.03:
+        is_valid = False
+        reasons.append("Image lacks the dark background typical of a skull-stripped brain MRI slice.")
+
+    if not (0.75 <= aspect_ratio <= 1.35):
+        is_valid = False
+        reasons.append("Unusual aspect ratio for a standard axial MRI slice.")
+
+    return is_valid, reasons, {
+        "mean_saturation": round(mean_saturation, 4),
+        "dark_fraction": round(dark_fraction, 4),
+        "aspect_ratio": round(aspect_ratio, 3),
+    }
+
+
 # ==============================================================================
 # PAGE CONFIG + CUSTOM STYLING
 # ==============================================================================
 
 st.set_page_config(
     page_title="NeuroXAI-Caps | Shahan & Co. Neurodiagnostics",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -321,6 +360,7 @@ transform = get_transform(img_size)
 # ==============================================================================
 
 st.subheader("Upload MRI Scan")
+st.caption("For best results, upload an axial T1-weighted grayscale MRI slice (JPEG/PNG).")
 uploaded_file = st.file_uploader(
     "Drag and drop a T1-weighted MRI slice (JPEG/PNG)",
     type=["jpg", "jpeg", "png"],
@@ -328,8 +368,11 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is not None:
-    pil_image = Image.open(uploaded_file).convert("L")
+    pil_image_rgb = Image.open(uploaded_file).convert("RGB")
+    pil_image = pil_image_rgb.convert("L")
     image_tensor = transform(pil_image)
+
+    is_valid, reasons, diag_info = analyze_image_validity(pil_image_rgb)
 
     start_time = time.time()
     probs = predict(model, image_tensor, device)
@@ -338,10 +381,29 @@ if uploaded_file is not None:
     pred_idx = int(np.argmax(probs))
     pred_class = class_names[pred_idx]
     pred_confidence = float(probs[pred_idx])
+    low_confidence = pred_confidence < 0.55
+
+    if not is_valid or low_confidence:
+        st.error("⚠️ This image does not appear to be a valid T1-weighted MRI scan.")
+        for reason in reasons:
+            st.write(f"- {reason}")
+        if low_confidence:
+            st.write(f"- Model confidence is low ({pred_confidence:.1%}), suggesting the input doesn't resemble the training distribution.")
+
+        with st.expander("Diagnostic details"):
+            st.json(diag_info)
+
+        override_key = f"override_{getattr(uploaded_file, 'file_id', uploaded_file.name)}"
+        proceed = st.checkbox(
+            "I understand this image failed validity checks and want to see the raw model output anyway (research use only).",
+            key=override_key
+        )
+        if not proceed:
+            st.stop()
+
     meta = STAGE_META[pred_class]
     laai_score = pred_confidence / (1 + (inference_ms / 1000))
 
-    # Log the case for this session's queue
     st.session_state.case_log.insert(0, {
         "Patient ID": patient_id or "—",
         "Scan ID": scan_id or "—",
@@ -374,7 +436,7 @@ if uploaded_file is not None:
 
     st.write("")
 
-    # ---- Tabs: Diagnosis | Grad-CAM | LIME | Technical ----
+    # ---- Tabs ----
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Probability Breakdown", "🔥 Grad-CAM++", "🟡 LIME", "⚙️ Technical Details"])
 
     with tab1:
@@ -384,7 +446,6 @@ if uploaded_file is not None:
         with col_chart:
             st.write("**Class probabilities**")
             for i, cname in enumerate(class_names):
-                c_meta = STAGE_META[cname]
                 st.write(f"{cname}")
                 st.progress(float(probs[i]), text=f"{probs[i]:.1%}")
 
