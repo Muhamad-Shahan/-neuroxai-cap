@@ -166,7 +166,8 @@ def generate_gradcam(model, image_tensor, device):
     target_layer = model.conv2
     cam = GradCAMPlusPlus(model=model, target_layers=[target_layer])
     input_tensor = image_tensor.unsqueeze(0).to(device)
-    grayscale_cam = cam(input_tensor=input_tensor)[0]
+    # FIX: targets=None tells the library to use the top predicted class
+    grayscale_cam = cam(input_tensor=input_tensor, targets=None)[0]
     display_img = image_tensor.squeeze().cpu().numpy() * 0.5 + 0.5
     display_img_rgb = np.stack([display_img] * 3, axis=-1)
     overlay = show_cam_on_image(display_img_rgb, grayscale_cam, use_rgb=True)
@@ -380,7 +381,7 @@ if uploaded_file is not None:
     with tab1:
         col_img, col_chart = st.columns([1, 1.4])
         with col_img:
-            st.image(pil_image, caption="Uploaded MRI", use_container_width=True)
+            st.image(pil_image, caption="Uploaded MRI", width='stretch')
         with col_chart:
             st.write("**Class probabilities**")
             for i, cname in enumerate(class_names):
@@ -393,16 +394,16 @@ if uploaded_file is not None:
         with st.spinner("Generating Grad-CAM++ heatmap..."):
             gradcam_overlay = generate_gradcam(model, image_tensor, device)
         c1, c2 = st.columns(2)
-        c1.image(pil_image, caption="Original MRI", use_container_width=True)
-        c2.image(gradcam_overlay, caption="Grad-CAM++ Overlay", use_container_width=True)
+        c1.image(pil_image, caption="Original MRI", width='stretch')
+        c2.image(gradcam_overlay, caption="Grad-CAM++ Overlay", width='stretch')
 
     with tab3:
         st.caption("Yellow contours mark the superpixel regions that most positively influenced the predicted class.")
         with st.spinner("Generating LIME explanation (~10–20s)..."):
             lime_overlay = generate_lime(model, image_tensor, device)
         c1, c2 = st.columns(2)
-        c1.image(pil_image, caption="Original MRI", use_container_width=True)
-        c2.image(lime_overlay, caption="LIME Explanation", use_container_width=True)
+        c1.image(pil_image, caption="Original MRI", width='stretch')
+        c2.image(lime_overlay, caption="LIME Explanation", width='stretch')
 
     with tab4:
         st.write("**Raw model output**")
